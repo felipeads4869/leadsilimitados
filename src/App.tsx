@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import * as XLSX from 'xlsx';
 import { businessCategories } from './categories';
-import { Search, Download, MapPin, Star, Phone, Globe, Loader2, AlertCircle, Building2 } from 'lucide-react';
+import { Search, Download, MapPin, Star, Globe, Loader2, AlertCircle, Building2, MessageCircle, PhoneCall, Filter, ChevronUp, ChevronDown, Facebook, Video } from 'lucide-react';
 
 interface PlaceData {
     name: string;
@@ -11,6 +11,10 @@ interface PlaceData {
     rating?: number;
     reviews?: number;
     place_id?: string;
+    google_maps_link?: string;
+    // CRM Fields
+    status: 'Pendiente' | 'Contactado' | 'Seguimiento' | 'Agendado' | 'Muerto';
+    notes: string;
 }
 
 type SearchStatus = 'idle' | 'loading' | 'success' | 'error';
@@ -24,12 +28,34 @@ function App() {
     const [status, setStatus] = useState<SearchStatus>('idle');
     const [errorMessage, setErrorMessage] = useState('');
 
+    // CRM Filter State
+    const [filterText, setFilterText] = useState('');
 
     // Autocomplete state
     const [showSuggestions, setShowSuggestions] = useState(false);
     const [filteredCategories, setFilteredCategories] = useState<string[]>([]);
 
     const scriptLoadedRef = useRef(false);
+
+    // Load from LocalStorage on mount
+    useEffect(() => {
+        const savedResults = localStorage.getItem('crm_results');
+
+        if (savedResults) {
+            try {
+                setResults(JSON.parse(savedResults));
+            } catch (e) {
+                console.error("Failed to load saved results", e);
+            }
+        }
+    }, []);
+
+    // Save to LocalStorage whenever results change
+    useEffect(() => {
+        if (results.length > 0) {
+            localStorage.setItem('crm_results', JSON.stringify(results));
+        }
+    }, [results]);
 
     useEffect(() => {
         if (category) {
@@ -64,6 +90,16 @@ function App() {
         document.head.appendChild(script);
     };
 
+    // Filter States
+    const [minReviews, setMinReviews] = useState<number>(0);
+    const [maxReviews, setMaxReviews] = useState<number>(10000);
+    const [onlyNoWebsite, setOnlyNoWebsite] = useState(false);
+    const [onlyOperational, setOnlyOperational] = useState(true);
+    const [targetLeads, setTargetLeads] = useState<number>(20);
+    const [showSettings, setShowSettings] = useState(false);
+
+    // ... (rest of useEffects)
+
     const handleSearch = async () => {
         if (!apiKey) {
             setErrorMessage("Please enter an API Key first.");
@@ -83,44 +119,120 @@ function App() {
 
         setStatus('loading');
         setResults([]);
-
         setErrorMessage('');
 
         try {
-            // Use the modern "New" Places API (Text Search New) via importLibrary
-            // @ts-ignore Google Maps types might lag slightly behind dynamically imported libraries
-            const { Place } = await google.maps.importLibrary("places") as { Place: any };
-
+            const needsComplexFetch = targetLeads > 20 || minReviews > 0 || maxReviews < 10000 || onlyNoWebsite || !onlyOperational;
             const query = `${category} in ${location}`;
 
-            // Request specific fields to optimize cost (Field Masking)
-            // New API uses camelCase field names 
-            const { places } = await Place.searchByText({
-                textQuery: query,
-                fields: ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'rating', 'userRatingCount', 'location'],
-                isOpenNow: false, // Optional: filter for currently open places
-            });
+            let finalResults: PlaceData[] = [];
 
-            const mappedResults: PlaceData[] = [];
+            if (!needsComplexFetch) {
+                // Fast Path (Optimized)
+                // @ts-ignore
+                const { Place } = await google.maps.importLibrary("places") as { Place: any };
+                const { places } = await Place.searchByText({
+                    textQuery: query,
+                    fields: ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'rating', 'userRatingCount', 'location', 'id', 'googleMapsURI'],
+                    isOpenNow: false,
+                });
 
-            if (places && places.length > 0) {
-                for (let i = 0; i < places.length; i++) {
-                    const p = places[i];
-                    mappedResults.push({
-                        name: p.displayName, // New API returns name as property often, or displayName
-                        address: p.formattedAddress,
-                        website: p.websiteURI,
-                        phone: p.nationalPhoneNumber,
-                        rating: p.rating,
-                        reviews: p.userRatingCount,
-                        place_id: p.id
+                finalResults = (places || []).map((p: any) => ({
+                    name: p.displayName,
+                    address: p.formattedAddress,
+                    website: p.websiteURI,
+                    phone: p.nationalPhoneNumber,
+                    rating: p.rating,
+                    reviews: p.userRatingCount,
+                    place_id: p.id,
+                    google_maps_link: p.googleMapsURI,
+                    status: 'Pendiente',
+                    notes: ''
+                }));
+
+            } else {
+                // Advanced Path (Targeted Extraction)
+                const service = new google.maps.places.PlacesService(document.createElement('div'));
+
+                // 1. Fetch Candidates (Legacy Loop) - Gets up to 60 basic items
+                const getAllCandidates = () => {
+                    return new Promise<google.maps.places.PlaceResult[]>((resolve) => {
+                        let collected: google.maps.places.PlaceResult[] = [];
+
+                        service.textSearch({ query }, (results, status, pagination) => {
+                            if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+                                // Pre-Filter Candidates to save on Details Calls
+                                const validCandidates = results.filter(p => {
+                                    const reviewCount = p.user_ratings_total || 0;
+                                    const isOperational = p.business_status === 'OPERATIONAL';
+
+                                    if (onlyOperational && !isOperational) return false;
+                                    if (reviewCount < minReviews) return false;
+                                    if (reviewCount > maxReviews) return false;
+                                    return true;
+                                });
+
+                                collected = [...collected, ...validCandidates];
+
+                                // Check if we have enough OR if we need more pages
+                                if (collected.length < targetLeads && pagination && pagination.hasNextPage) {
+                                    setTimeout(() => pagination.nextPage(), 2000);
+                                } else {
+                                    resolve(collected.slice(0, targetLeads));
+                                }
+                            } else if (status === google.maps.places.PlacesServiceStatus.ZERO_RESULTS) {
+                                resolve(collected);
+                            } else {
+                                resolve(collected); // Return what we have on error to avoid blocking
+                            }
+                        });
                     });
+                };
 
+                const candidates = await getAllCandidates();
 
-                }
+                // 2. Fetch Rich Details for Survivors (New API Wrapper)
+                // @ts-ignore
+                const { Place } = await google.maps.importLibrary("places") as { Place: any };
+
+                const detailedPromises = candidates.map(async (c) => {
+                    if (!c.place_id) return null;
+                    const place = new Place({ id: c.place_id });
+                    // Fetch specifically what we need
+                    try {
+                        await place.fetchFields({
+                            fields: ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'googleMapsURI']
+                        });
+
+                        // Post-Fetch Filter: No Website
+                        if (onlyNoWebsite && place.websiteURI) return null; // Skip if it has a website
+
+                        return {
+                            name: place.displayName || c.name || 'N/A',
+                            address: place.formattedAddress || c.formatted_address || 'N/A',
+                            website: place.websiteURI,
+                            phone: place.nationalPhoneNumber, // Rich data!
+                            rating: c.rating, // Keep legacy rating if new one not fetched (saves field cost?) - actually new one is better but let's use what we have
+                            reviews: c.user_ratings_total,
+                            place_id: c.place_id,
+                            google_maps_link: place.googleMapsURI,
+                            status: 'Pendiente',
+                            notes: ''
+                        } as PlaceData;
+                    } catch (err) {
+                        console.warn('Failed to fetch details for', c.place_id, err);
+                        return null;
+                    }
+                });
+
+                const detailedResults = await Promise.all(detailedPromises);
+                finalResults = detailedResults.filter(r => r !== null) as PlaceData[];
             }
 
-            setResults(mappedResults);
+            // 3. Sort by Reviews
+            finalResults.sort((a, b) => (b.reviews || 0) - (a.reviews || 0));
+
+            setResults(finalResults);
             setStatus('success');
 
         } catch (e: any) {
@@ -130,27 +242,93 @@ function App() {
         }
     };
 
+    const handleUpdateStatus = (idx: number, newStatus: PlaceData['status']) => {
+        const newResults = [...results];
+        newResults[idx].status = newStatus;
+        setResults(newResults);
+    };
+
+    const handleUpdateNotes = (idx: number, newNotes: string) => {
+        const newResults = [...results];
+        newResults[idx].notes = newNotes;
+        setResults(newResults);
+    };
+
+    const filteredResults = results.filter(r =>
+        r.name.toLowerCase().includes(filterText.toLowerCase()) ||
+        r.status.toLowerCase().includes(filterText.toLowerCase())
+    );
+
     const handleExport = () => {
-        const ws = XLSX.utils.json_to_sheet(results.map(r => ({
-            "Business Name": r.name,
-            "Address": r.address,
-            "Phone": r.phone || "N/A",
-            "Website": r.website || "N/A",
-            "Rating": r.rating || "N/A",
-            "Reviews": r.reviews || 0
-        })));
+        // Create headers
+        const headers = ["Business Name", "Address", "Phone (WhatsApp)", "Website", "Google Maps Link", "Rating", "Reviews", "Status", "Notes"];
+
+        // Map data
+        const data = results.map(r => [
+            r.name,
+            r.address,
+            r.phone || "N/A",
+            r.website || "N/A",
+            r.google_maps_link || "N/A",
+            r.rating || "N/A",
+            r.reviews || 0,
+            r.status,
+            r.notes
+        ]);
+
+        // Create worksheet from array of arrays
+        const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+
+        // Apply formulas for phone numbers and maps to keep raw data visible but clickable
+        results.forEach((r, i) => {
+            if (r.phone) {
+                // Determine cell ref (C is the 3rd column, index 2) -> C2, C3, etc.
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 2 });
+                // Clean phone for URL (remove spaces, dashes, etc)
+                const cleanPhone = r.phone.replace(/[^\d+]/g, '');
+
+                // Set the cell content to a hyperlink formula but DISPLAY the phone number
+                ws[cellRef] = {
+                    t: 's', // type string
+                    v: r.phone, // Display value IS THE PHONE NUMBER
+                    // Formula: HYPERLINK("https://wa.me/PHONE", "PHONE NUMBER")
+                    f: `HYPERLINK("https://wa.me/${cleanPhone}", "${r.phone}")`,
+                    l: { Target: `https://wa.me/${cleanPhone}`, Tooltip: "WhatsApp" }
+                };
+            }
+            // Apply formula for Google Maps Link
+            if (r.google_maps_link) {
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 4 }); // E is the 5th column, index 4
+                ws[cellRef] = {
+                    t: 's',
+                    v: r.google_maps_link, // Display value IS THE URL
+                    f: `HYPERLINK("${r.google_maps_link}", "${r.google_maps_link}")`,
+                    l: { Target: r.google_maps_link, Tooltip: "Google Maps" }
+                };
+            }
+        });
 
         const wb = XLSX.utils.book_new();
-        XLSX.utils.book_append_sheet(wb, ws, "Businesses");
-        const filename = `${category.replace(/\s+/g, '_')}_${location.replace(/\s+/g, '_')}_leads.xlsx`;
+        XLSX.utils.book_append_sheet(wb, ws, "CRM Leads");
+        const filename = `CRM_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
         XLSX.writeFile(wb, filename);
+    };
+
+    const getStatusColor = (status: string) => {
+        switch (status) {
+            case 'Contactado': return 'status-contactado';
+            case 'Seguimiento': return 'status-seguimiento';
+            case 'Agendado': return 'status-agendado';
+            case 'Muerto': return 'status-muerto';
+            default: return 'status-pendiente'; // Pendiente
+        }
     };
 
     return (
         <div className="app-container">
 
             <header style={{ textAlign: 'center', marginBottom: '3rem' }}>
-                <h1>Growth Extractor AI</h1>
+                <h1>Google Maps Business Extractor</h1>
                 <p style={{ color: 'var(--text-secondary)' }}>Identify, Analyze, and Export Business Leads with Precision (Places API New)</p>
             </header>
 
@@ -172,7 +350,7 @@ function App() {
                             </div>
                         </div>
                         <small style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginTop: '0.5rem', display: 'block' }}>
-                            Your key is processed locally. Required: <strong>Places API (New)</strong> & Maps JavaScript API enabled.
+                            Your key is processed locally. Required: <strong>Places API (New)</strong>.
                         </small>
                     </div>
 
@@ -228,6 +406,81 @@ function App() {
                         </div>
                     </div>
 
+                    {/* Settings Toggle */}
+                    <button
+                        className="toggle-settings-btn"
+                        onClick={() => setShowSettings(!showSettings)}
+                        style={{ width: '100%', justifyContent: 'center', marginBottom: '10px' }}
+                    >
+                        {showSettings ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        {showSettings ? 'Hide Extraction Settings' : 'Advanced Extraction Settings'}
+                    </button>
+
+                    {showSettings && (
+                        <div className="card settings-panel">
+                            <div className="settings-grid">
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                        Min Reviews
+                                    </label>
+                                    <input
+                                        type="number"
+                                        className="input-field"
+                                        value={minReviews}
+                                        onChange={(e) => setMinReviews(Number(e.target.value))}
+                                        placeholder="0"
+                                    />
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                        Max Reviews
+                                    </label>
+                                    <input
+                                        type="number"
+                                        className="input-field"
+                                        value={maxReviews}
+                                        onChange={(e) => setMaxReviews(Number(e.target.value))}
+                                        placeholder="10000"
+                                    />
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
+                                        Target Leads (Max)
+                                    </label>
+                                    <input
+                                        type="number"
+                                        className="input-field"
+                                        value={targetLeads}
+                                        onChange={(e) => setTargetLeads(Math.min(60, Number(e.target.value)))}
+                                        placeholder="20"
+                                        max={60}
+                                    />
+                                    <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                                        {targetLeads > 20 ? '⚠️ High token usage (Legacy Mode)' : '⚡ Optimized (New API)'}
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', justifyContent: 'center' }}>
+                                    <label className="checkbox-wrapper">
+                                        <input
+                                            type="checkbox"
+                                            checked={onlyNoWebsite}
+                                            onChange={(e) => setOnlyNoWebsite(e.target.checked)}
+                                        />
+                                        <span>Only No Website (High Value)</span>
+                                    </label>
+                                    <label className="checkbox-wrapper">
+                                        <input
+                                            type="checkbox"
+                                            checked={onlyOperational}
+                                            onChange={(e) => setOnlyOperational(e.target.checked)}
+                                        />
+                                        <span>Only Operational (Open)</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <button
                         className="primary"
                         onClick={handleSearch}
@@ -257,52 +510,154 @@ function App() {
 
             {results.length > 0 && (
                 <div className="card results-panel">
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-                        <h2 style={{ margin: 0 }}>Found {results.length} Businesses</h2>
-                        <button onClick={handleExport} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', backgroundColor: '#10b981', color: 'white' }}>
-                            <Download size={18} /> Export to Excel
-                        </button>
+                    <div className="flex-between mb-4">
+                        <h2 style={{ margin: 0 }}>Active Leads: {filteredResults.length} / {results.length}</h2>
+
+                        <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                            <div className="input-group" style={{ margin: 0, width: '300px' }}>
+                                <div style={{ position: 'relative' }}>
+                                    <input
+                                        type="text"
+                                        placeholder="Filter by name or status..."
+                                        value={filterText}
+                                        onChange={(e) => setFilterText(e.target.value)}
+                                        style={{ paddingLeft: '2.5rem', fontSize: '14px', padding: '10px 12px 10px 40px' }}
+                                    />
+                                    <Filter style={{ position: 'absolute', left: '0.8rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-secondary)' }} size={16} />
+                                </div>
+                            </div>
+
+                            <button onClick={handleExport} style={{ backgroundColor: '#34c759', color: 'white' }}>
+                                <Download size={16} /> Export CRM
+                            </button>
+                        </div>
                     </div>
 
                     <div style={{ overflowX: 'auto' }}>
                         <table>
                             <thead>
                                 <tr>
-                                    <th>Name</th>
-                                    <th>Address</th>
-                                    <th>Rating</th>
-                                    <th>Contact</th>
+                                    <th style={{ width: '20%' }}>Business</th>
+                                    <th style={{ width: '15%' }}>Contact</th>
+                                    <th style={{ width: '15%' }}>Investigation</th>
+                                    <th style={{ width: '15%' }}>Status</th>
+                                    <th style={{ width: '20%' }}>Notes</th>
+                                    <th style={{ width: '15%' }}>Rating (Reviews)</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {results.map((place, idx) => (
-                                    <tr key={idx}>
-                                        <td>
-                                            <div style={{ fontWeight: 600 }}>{place.name}</div>
-                                            {place.website && (
-                                                <a href={place.website} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
-                                                    <Globe size={12} /> Website
-                                                </a>
-                                            )}
-                                        </td>
-                                        <td style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>{place.address}</td>
-                                        <td>
-                                            {place.rating ? (
-                                                <div className="badge">
-                                                    <Star size={12} style={{ marginRight: '4px', fill: 'currentColor' }} />
-                                                    {place.rating} ({place.reviews})
+                                {filteredResults.map((place, idx) => {
+                                    // Use original index to update the main state correctly even when filtered
+                                    const originalIndex = results.findIndex(r => r.place_id === place.place_id);
+                                    const isDead = place.status === 'Muerto';
+
+                                    return (
+                                        <tr key={place.place_id || idx} className={isDead ? 'opacity-50' : ''}>
+                                            <td>
+                                                <div style={{ fontWeight: 600, fontSize: '15px' }}>{place.name}</div>
+                                                <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>{place.address}</div>
+                                                <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+                                                    {place.website && (
+                                                        <a href={place.website} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                                            <Globe size={12} /> Website
+                                                        </a>
+                                                    )}
+                                                    {place.google_maps_link && (
+                                                        <a href={place.google_maps_link} target="_blank" rel="noreferrer" style={{ fontSize: '0.85rem', color: '#ea4335', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                                            <MapPin size={12} /> Google Maps
+                                                        </a>
+                                                    )}
                                                 </div>
-                                            ) : <span style={{ color: 'var(--text-secondary)' }}>-</span>}
-                                        </td>
-                                        <td>
-                                            {place.phone ? (
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem' }}>
-                                                    <Phone size={14} /> {place.phone}
+                                            </td>
+                                            <td>
+                                                {place.phone ? (
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                                                        <a
+                                                            href={`https://wa.me/${place.phone.replace(/[^\d+]/g, '')}?text=Hola ${place.name}, estoy interesado en sus servicios.`}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            className="action-btn btn-whatsapp"
+                                                        >
+                                                            <MessageCircle size={14} /> WhatsApp
+                                                        </a>
+                                                        <a
+                                                            href={`tel:${place.phone.replace(/[^\d+]/g, '')}`}
+                                                            className="action-btn btn-call"
+                                                        >
+                                                            <PhoneCall size={14} /> Llamar
+                                                        </a>
+                                                    </div>
+                                                ) : <span style={{ color: 'var(--text-secondary)', fontStyle: 'italic' }}>No phone available</span>}
+                                            </td>
+                                            <td>
+                                                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                                                    <a
+                                                        href={`https://www.google.com/search?q=${encodeURIComponent(place.name + " " + place.address)}`}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="icon-btn google-btn"
+                                                        title="Search on Google"
+                                                        style={{ color: '#ea4335', padding: '6px', backgroundColor: '#fee2e2', borderRadius: '6px' }}
+                                                    >
+                                                        <Search size={16} />
+                                                    </a>
+                                                    <a
+                                                        href={`https://www.facebook.com/search/top?q=${encodeURIComponent(place.name)}`}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="icon-btn facebook-btn"
+                                                        title="Search on Facebook"
+                                                        style={{ color: '#1877f2', padding: '6px', backgroundColor: '#e7f5ff', borderRadius: '6px' }}
+                                                    >
+                                                        <Facebook size={16} />
+                                                    </a>
+                                                    <a
+                                                        href={`https://www.tiktok.com/search?q=${encodeURIComponent(place.name)}`}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="icon-btn tiktok-btn"
+                                                        title="Search on TikTok"
+                                                        style={{ color: '#000000', padding: '6px', backgroundColor: '#f1f1f1', borderRadius: '6px' }}
+                                                    >
+                                                        <Video size={16} />
+                                                    </a>
                                                 </div>
-                                            ) : <span style={{ color: 'var(--text-secondary)' }}>-</span>}
-                                        </td>
-                                    </tr>
-                                ))}
+                                            </td>
+                                            <td>
+                                                <select
+                                                    className={`crm-select ${getStatusColor(place.status)}`}
+                                                    value={place.status}
+                                                    onChange={(e) => handleUpdateStatus(originalIndex, e.target.value as any)}
+                                                    style={{ width: '100%' }}
+                                                >
+                                                    <option value="Pendiente">Pendiente</option>
+                                                    <option value="Contactado">Contactado</option>
+                                                    <option value="Seguimiento">Seguimiento</option>
+                                                    <option value="Agendado">Agendado</option>
+                                                    <option value="Muerto">Muerto</option>
+                                                </select>
+                                            </td>
+                                            <td>
+                                                <textarea
+                                                    className="crm-input"
+                                                    value={place.notes}
+                                                    onChange={(e) => handleUpdateNotes(originalIndex, e.target.value)}
+                                                    placeholder="Add quick notes..."
+                                                    rows={3}
+                                                    style={{ resize: 'vertical' }}
+                                                />
+                                            </td>
+                                            <td>
+                                                {place.rating ? (
+                                                    <div className="badge">
+                                                        <Star size={12} style={{ marginRight: '4px', fill: 'currentColor' }} />
+                                                        {place.rating} ({place.reviews})
+                                                    </div>
+                                                ) : <span style={{ color: 'var(--text-secondary)' }}>-</span>}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

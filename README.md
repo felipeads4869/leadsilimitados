@@ -57,4 +57,7 @@ Este proyecto ha sido construido con las mejores herramientas modernas:
 ¡Las contribuciones son bienvenidas! Si tienes ideas para mejorar este extractor, no dudes en abrir un issue o enviar un pull request.
 
 ---
-Hecho con ❤️ para facilitar la búsqueda de prospectos.
+Hecho con ❤️ para facilitar la búsqueda de prospectos. 
+desarrollado por Felipe Ostos Bermúdez
+para desarrollos mas completos, scrappear paises enteros, contáctame.
+
