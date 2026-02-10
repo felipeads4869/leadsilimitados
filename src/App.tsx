@@ -18,11 +18,15 @@ interface PlaceData {
 }
 
 type SearchStatus = 'idle' | 'loading' | 'success' | 'error';
+type SearchMode = 'PRO' | 'BUSINESS';
 
 function App() {
     const [apiKey, setApiKey] = useState('');
     const [location, setLocation] = useState('');
     const [category, setCategory] = useState('');
+    const [lastSearchedCategory, setLastSearchedCategory] = useState('');
+    const [lastSearchedLocation, setLastSearchedLocation] = useState('');
+    const [searchMode, setSearchMode] = useState<SearchMode>('PRO');
 
     const [results, setResults] = useState<PlaceData[]>([]);
     const [status, setStatus] = useState<SearchStatus>('idle');
@@ -40,6 +44,8 @@ function App() {
     // Load from LocalStorage on mount
     useEffect(() => {
         const savedResults = localStorage.getItem('crm_results');
+        const savedCategory = localStorage.getItem('crm_last_category');
+        const savedLocation = localStorage.getItem('crm_last_location');
 
         if (savedResults) {
             try {
@@ -48,14 +54,25 @@ function App() {
                 console.error("Failed to load saved results", e);
             }
         }
+
+        if (savedCategory) {
+            setLastSearchedCategory(savedCategory);
+            setCategory(savedCategory);
+        }
+        if (savedLocation) {
+            setLastSearchedLocation(savedLocation);
+            setLocation(savedLocation);
+        }
     }, []);
 
     // Save to LocalStorage whenever results change
     useEffect(() => {
         if (results.length > 0) {
             localStorage.setItem('crm_results', JSON.stringify(results));
+            localStorage.setItem('crm_last_category', lastSearchedCategory);
+            localStorage.setItem('crm_last_location', lastSearchedLocation);
         }
-    }, [results]);
+    }, [results, lastSearchedCategory, lastSearchedLocation]);
 
     useEffect(() => {
         if (category) {
@@ -98,7 +115,14 @@ function App() {
     const [targetLeads, setTargetLeads] = useState<number>(20);
     const [showSettings, setShowSettings] = useState(false);
 
-    // ... (rest of useEffects)
+    // Auto-switch to BUSINESS mode if expensive filters are used
+    useEffect(() => {
+        if (minReviews > 0 || maxReviews < 10000 || onlyNoWebsite) {
+            if (searchMode === 'PRO') {
+                setSearchMode('BUSINESS');
+            }
+        }
+    }, [minReviews, maxReviews, onlyNoWebsite]);
 
     const handleSearch = async () => {
         if (!apiKey) {
@@ -127,23 +151,37 @@ function App() {
 
             let finalResults: PlaceData[] = [];
 
+            // Configure fields based on Search Mode
+            // PRO: Basic fields only (cheaper - Text Search Pro SKU). 
+            //      Excludes: Phone, Website, Ratings, Reviews (Text Search Enterprise SKU).
+            //      Includes: Business Status (operational check) as it is Pro SKU.
+            // BUSINESS: All available fields (Text Search Enterprise SKU).
+            const proFields = ['displayName', 'formattedAddress', 'location', 'id', 'googleMapsURI', 'businessStatus'];
+            const businessFields = ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'rating', 'userRatingCount', 'location', 'id', 'googleMapsURI', 'businessStatus'];
+
+            const selectedFields = searchMode === 'PRO' ? proFields : businessFields;
+
             if (!needsComplexFetch) {
                 // Fast Path (Optimized)
                 // @ts-ignore
                 const { Place } = await google.maps.importLibrary("places") as { Place: any };
                 const { places } = await Place.searchByText({
                     textQuery: query,
-                    fields: ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'rating', 'userRatingCount', 'location', 'id', 'googleMapsURI'],
+                    fields: selectedFields,
                     isOpenNow: false,
                 });
 
-                finalResults = (places || []).map((p: any) => ({
+                finalResults = (places || []).filter((p: any) => {
+                    // Filter by operational status if requested
+                    if (onlyOperational && p.businessStatus !== 'OPERATIONAL') return false;
+                    return true;
+                }).map((p: any) => ({
                     name: p.displayName,
                     address: p.formattedAddress,
-                    website: p.websiteURI,
-                    phone: p.nationalPhoneNumber,
-                    rating: p.rating,
-                    reviews: p.userRatingCount,
+                    website: searchMode === 'PRO' ? undefined : p.websiteURI,
+                    phone: searchMode === 'PRO' ? undefined : p.nationalPhoneNumber,
+                    rating: searchMode === 'PRO' ? undefined : p.rating,
+                    reviews: searchMode === 'PRO' ? undefined : p.userRatingCount,
                     place_id: p.id,
                     google_maps_link: p.googleMapsURI,
                     status: 'Pendiente',
@@ -201,7 +239,7 @@ function App() {
                     // Fetch specifically what we need
                     try {
                         await place.fetchFields({
-                            fields: ['displayName', 'formattedAddress', 'websiteURI', 'nationalPhoneNumber', 'googleMapsURI']
+                            fields: selectedFields
                         });
 
                         // Post-Fetch Filter: No Website
@@ -210,10 +248,10 @@ function App() {
                         return {
                             name: place.displayName || c.name || 'N/A',
                             address: place.formattedAddress || c.formatted_address || 'N/A',
-                            website: place.websiteURI,
-                            phone: place.nationalPhoneNumber, // Rich data!
-                            rating: c.rating, // Keep legacy rating if new one not fetched (saves field cost?) - actually new one is better but let's use what we have
-                            reviews: c.user_ratings_total,
+                            website: searchMode === 'PRO' ? undefined : place.websiteURI,
+                            phone: searchMode === 'PRO' ? undefined : place.nationalPhoneNumber,
+                            rating: searchMode === 'PRO' ? undefined : c.rating,
+                            reviews: searchMode === 'PRO' ? undefined : c.user_ratings_total,
                             place_id: c.place_id,
                             google_maps_link: place.googleMapsURI,
                             status: 'Pendiente',
@@ -233,6 +271,8 @@ function App() {
             finalResults.sort((a, b) => (b.reviews || 0) - (a.reviews || 0));
 
             setResults(finalResults);
+            setLastSearchedCategory(category);
+            setLastSearchedLocation(location);
             setStatus('success');
 
         } catch (e: any) {
@@ -261,13 +301,14 @@ function App() {
 
     const handleExport = () => {
         // Create headers
-        const headers = ["Business Name", "Address", "Phone (WhatsApp)", "Website", "Google Maps Link", "Rating", "Reviews", "Status", "Notes"];
+        const headers = ["Business Name", "Address", "Phone", "WhatsApp Link", "Website", "Google Maps Link", "Rating", "Reviews", "Status", "Notes"];
 
         // Map data
         const data = results.map(r => [
             r.name,
             r.address,
             r.phone || "N/A",
+            "WhatsApp", // Placeholder for the new column
             r.website || "N/A",
             r.google_maps_link || "N/A",
             r.rating || "N/A",
@@ -279,29 +320,44 @@ function App() {
         // Create worksheet from array of arrays
         const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
 
-        // Apply formulas for phone numbers and maps to keep raw data visible but clickable
+        // Apply formulas for phone numbers and maps
         results.forEach((r, i) => {
-            if (r.phone) {
-                // Determine cell ref (C is the 3rd column, index 2) -> C2, C3, etc.
-                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 2 });
-                // Clean phone for URL (remove spaces, dashes, etc)
-                const cleanPhone = r.phone.replace(/[^\d+]/g, '');
+            const cleanPhone = r.phone ? r.phone.replace(/[^\d+]/g, '') : '';
 
-                // Set the cell content to a hyperlink formula but DISPLAY the phone number
-                ws[cellRef] = {
-                    t: 's', // type string
-                    v: r.phone, // Display value IS THE PHONE NUMBER
-                    // Formula: HYPERLINK("https://wa.me/PHONE", "PHONE NUMBER")
-                    f: `HYPERLINK("https://wa.me/${cleanPhone}", "${r.phone}")`,
-                    l: { Target: `https://wa.me/${cleanPhone}`, Tooltip: "WhatsApp" }
-                };
-            }
-            // Apply formula for Google Maps Link
-            if (r.google_maps_link) {
-                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 4 }); // E is the 5th column, index 4
+            // 1. Phone Column (C) - Display Number, Link to Tel
+            if (r.phone) {
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 2 });
                 ws[cellRef] = {
                     t: 's',
-                    v: r.google_maps_link, // Display value IS THE URL
+                    v: r.phone,
+                    f: `HYPERLINK("tel:${cleanPhone}", "${r.phone}")`,
+                    l: { Target: `tel:${cleanPhone}`, Tooltip: "Call" }
+                };
+            }
+
+            // 2. WhatsApp Link Column (D) - NEW with Message
+            if (r.phone) {
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 3 });
+                const exportCategory = lastSearchedCategory || category;
+                const message = encodeURIComponent(`Hola, estaba buscando información sobre ${exportCategory} y veo un problema que les puede estar restando clientes y oportunidades. Porfavor comunicarme con la persona a cargo para explicarle en detalle.`);
+
+                ws[cellRef] = {
+                    t: 's',
+                    v: "Enviar Mensaje",
+                    f: `HYPERLINK("https://wa.me/${cleanPhone}?text=${message}", "Enviar Mensaje")`,
+                    l: { Target: `https://wa.me/${cleanPhone}?text=${message}`, Tooltip: "WhatsApp Message" }
+                };
+            } else {
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 3 });
+                ws[cellRef] = { t: 's', v: "-" };
+            }
+
+            // 3. Google Maps Link (F) - shifted index! (Index 5)
+            if (r.google_maps_link) {
+                const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 5 });
+                ws[cellRef] = {
+                    t: 's',
+                    v: r.google_maps_link,
                     f: `HYPERLINK("${r.google_maps_link}", "${r.google_maps_link}")`,
                     l: { Target: r.google_maps_link, Tooltip: "Google Maps" }
                 };
@@ -310,7 +366,9 @@ function App() {
 
         const wb = XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb, ws, "CRM Leads");
-        const filename = `CRM_Export_${new Date().toISOString().slice(0, 10)}.xlsx`;
+        const exportCategory = lastSearchedCategory || category;
+        const exportLocation = lastSearchedLocation || location;
+        const filename = `${exportLocation}_${exportCategory}_${new Date().toISOString().slice(0, 10)}.xlsx`.replace(/ /g, '_');
         XLSX.writeFile(wb, filename);
     };
 
@@ -406,6 +464,49 @@ function App() {
                         </div>
                     </div>
 
+                    <div className="input-group" style={{ marginBottom: '1.5rem' }}>
+                        <label className="label">Search Optimization</label>
+                        <div style={{ display: 'flex', gap: '1rem', background: '#f5f5f7', padding: '0.4rem', borderRadius: 'var(--radius-m)', border: '1px solid var(--border-color)' }}>
+                            <button
+                                onClick={() => setSearchMode('PRO')}
+                                style={{
+                                    flex: 1,
+                                    borderRadius: 'var(--radius-s)',
+                                    backgroundColor: searchMode === 'PRO' ? 'white' : 'transparent',
+                                    color: searchMode === 'PRO' ? 'var(--apple-blue)' : 'var(--text-secondary)',
+                                    boxShadow: searchMode === 'PRO' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none',
+                                    fontWeight: 600,
+                                    fontSize: '14px',
+                                    padding: '8px 16px',
+                                    transition: 'all 0.2s ease'
+                                }}
+                            >
+                                🚀 PRO (High Volume)
+                            </button>
+                            <button
+                                onClick={() => setSearchMode('BUSINESS')}
+                                style={{
+                                    flex: 1,
+                                    borderRadius: 'var(--radius-s)',
+                                    backgroundColor: searchMode === 'BUSINESS' ? 'white' : 'transparent',
+                                    color: searchMode === 'BUSINESS' ? 'var(--apple-blue)' : 'var(--text-secondary)',
+                                    boxShadow: searchMode === 'BUSINESS' ? '0 2px 4px rgba(0,0,0,0.1)' : 'none',
+                                    fontWeight: 600,
+                                    fontSize: '14px',
+                                    padding: '8px 16px',
+                                    transition: 'all 0.2s ease'
+                                }}
+                            >
+                                💼 BUSINESS (Full Detail)
+                            </button>
+                        </div>
+                        <small style={{ color: 'var(--text-secondary)', fontSize: '0.75rem', marginTop: '0.5rem', display: 'block' }}>
+                            {searchMode === 'PRO'
+                                ? "Cost-efficient (Text Search Pro SKU). Extracts: Name, Address, Maps Link, Status."
+                                : "Full extraction (Text Search Enterprise SKU). Adds: Website, Phone, Ratings, Reviews."}
+                        </small>
+                    </div>
+
                     {/* Settings Toggle */}
                     <button
                         className="toggle-settings-btn"
@@ -421,7 +522,7 @@ function App() {
                             <div className="settings-grid">
                                 <div>
                                     <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                                        Min Reviews
+                                        Min Reviews <span style={{ fontSize: '10px', backgroundColor: '#e0e7ff', color: '#4338ca', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px' }}>BUSINESS</span>
                                     </label>
                                     <input
                                         type="number"
@@ -433,7 +534,7 @@ function App() {
                                 </div>
                                 <div>
                                     <label style={{ display: 'block', fontSize: '13px', marginBottom: '8px', color: 'var(--text-secondary)' }}>
-                                        Max Reviews
+                                        Max Reviews <span style={{ fontSize: '10px', backgroundColor: '#e0e7ff', color: '#4338ca', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px' }}>BUSINESS</span>
                                     </label>
                                     <input
                                         type="number"
@@ -451,9 +552,9 @@ function App() {
                                         type="number"
                                         className="input-field"
                                         value={targetLeads}
-                                        onChange={(e) => setTargetLeads(Math.min(60, Number(e.target.value)))}
+                                        onChange={(e) => setTargetLeads(Math.min(100, Number(e.target.value)))}
                                         placeholder="20"
-                                        max={60}
+                                        max={100}
                                     />
                                     <div style={{ fontSize: '11px', color: 'var(--text-secondary)', marginTop: '4px' }}>
                                         {targetLeads > 20 ? '⚠️ High token usage (Legacy Mode)' : '⚡ Optimized (New API)'}
@@ -466,7 +567,7 @@ function App() {
                                             checked={onlyNoWebsite}
                                             onChange={(e) => setOnlyNoWebsite(e.target.checked)}
                                         />
-                                        <span>Only No Website (High Value)</span>
+                                        <span> Only No Website <span style={{ fontSize: '10px', backgroundColor: '#e0e7ff', color: '#4338ca', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px' }}>BUSINESS</span></span>
                                     </label>
                                     <label className="checkbox-wrapper">
                                         <input
@@ -474,7 +575,7 @@ function App() {
                                             checked={onlyOperational}
                                             onChange={(e) => setOnlyOperational(e.target.checked)}
                                         />
-                                        <span>Only Operational (Open)</span>
+                                        <span> Only Operational <span style={{ fontSize: '10px', backgroundColor: '#dcfce7', color: '#166534', padding: '2px 4px', borderRadius: '4px', marginLeft: '4px' }}>PRO</span></span>
                                     </label>
                                 </div>
                             </div>
@@ -573,7 +674,7 @@ function App() {
                                                 {place.phone ? (
                                                     <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                                                         <a
-                                                            href={`https://wa.me/${place.phone.replace(/[^\d+]/g, '')}?text=Hola ${place.name}, estoy interesado en sus servicios.`}
+                                                            href={`https://wa.me/${place.phone.replace(/[^\d+]/g, '')}?text=${encodeURIComponent(`Hola, estaba buscando información sobre ${lastSearchedCategory || category} y veo un problema que les puede estar restando clientes y oportunidades. Porfavor comunicarme con la persona a cargo para explicarle en detalle.`)}`}
                                                             target="_blank"
                                                             rel="noreferrer"
                                                             className="action-btn btn-whatsapp"
