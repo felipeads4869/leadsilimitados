@@ -48,7 +48,7 @@ Este proyecto ha sido construido con las mejores herramientas modernas:
 
 *   ⚛️ **React + TypeScript**: Para una interfaz robusta y tipada.
 *   ⚡ **Vite**: Para un desarrollo ultrarrápido.
-*   🗺️ **Google Maps JavaScript API**: El motor de búsqueda de lugares.
+*   🗺️ **Google Maps Places API (New)**: Utilizando la última versión para búsquedas precisas y ricas en datos.
 *   📄 **XLSX (SheetJS)**: Para la generación de archivos Excel.
 *   🎨 **Lucide React**: Iconografía moderna y limpia.
 
