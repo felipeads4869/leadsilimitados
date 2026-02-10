@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Google Places Business Extractor</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+    <script>
+      // Global callback for Google Maps API
+      window.initMap = function() {
+        console.log("Google Maps API loaded");
+        // We can use a custom event or check window.google later when component mounts
+        window.dispatchEvent(new Event('google-maps-loaded'));
+      };
+    </script>
+  </body>
+</html>
