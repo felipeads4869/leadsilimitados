@@ -1,37 +1,60 @@
-# Google Maps Business Extractor
+# 🏙️ Google Maps Business Extractor
 
-Generate actionable business leads directly from Google Maps using this powerful extraction tool.
+¡Consigue leads de negocio accionables directamente de Google Maps con esta poderosa herramienta de extracción!
 
-## Features
+![Version](https://img.shields.io/badge/version-1.0.0-blue.svg) ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
-*   **Smart Search**: Find businesses by category and location.
-*   **Rich Data**: Extract names, addresses, phone numbers, websites, ratings, and review counts.
-*   **Excel Export**: Download results instantly as a `.xlsx` file.
-*   **Autocomplete**: Built-in suggestions for business categories.
-*   **Local Processing**: Your API key stays in your browser.
+## ✨ Características Principales
 
-## getting Started
+*   🔍 **Búsqueda Inteligente**: Encuentra negocios por categoría y ubicación de forma precisa.
+*   📊 **Datos Ricos**: Extrae nombres, direcciones, teléfonos, sitios web, calificaciones y cantidad de reseñas.
+*   📥 **Exportación a Excel**: Descarga los resultados instantáneamente como un archivo `.xlsx`.
+*   📝 **Autocompletado**: Sugerencias integradas para categorías de negocios (¡más de 3,800 categorías!).
+*   🔒 **Procesamiento Local**: Tu clave API se queda en tu navegador, garantizando tu privacidad.
 
-1.  **Install Dependencies**:
-    ```bash
-    npm install
-    ```
+## 🚀 Comenzando
 
-2.  **Run the Application**:
-    ```bash
-    npm run dev
-    ```
+Sigue estos pasos para poner en marcha el proyecto:
 
-3.  **Open in Browser**:
-    Navigate to `http://localhost:5173`.
+### 1. Instalación de Dependencias
 
-4.  **Enter API Key**:
-    You need a Google Maps API Key with **Places API** and **Maps JavaScript API** enabled.
+Ejecuta el siguiente comando para instalar todo lo necesario:
 
-## Technologies Used
+```bash
+npm install
+```
 
-*   React + TypeScript
-*   Vite
-*   Google Maps JavaScript API
-*   XLSX (SheetJS)
-*   Lucide React (Icons)
+### 2. Ejecutar la Aplicación
+
+Inicia el servidor de desarrollo:
+
+```bash
+npm run dev
+```
+
+### 3. Abrir en el Navegador
+
+Navega a `http://localhost:5173` para ver la aplicación en acción.
+
+### 4. Configuración de API Key
+
+Necesitas una **Google Maps API Key** con las siguientes APIs habilitadas en tu consola de Google Cloud:
+-   **Places API (New)**
+-   **Maps JavaScript API**
+
+## 🛠️ Tecnologías Utilizadas
+
+Este proyecto ha sido construido con las mejores herramientas modernas:
+
+*   ⚛️ **React + TypeScript**: Para una interfaz robusta y tipada.
+*   ⚡ **Vite**: Para un desarrollo ultrarrápido.
+*   🗺️ **Google Maps JavaScript API**: El motor de búsqueda de lugares.
+*   📄 **XLSX (SheetJS)**: Para la generación de archivos Excel.
+*   🎨 **Lucide React**: Iconografía moderna y limpia.
+
+## 🤝 Contribución
+
+¡Las contribuciones son bienvenidas! Si tienes ideas para mejorar este extractor, no dudes en abrir un issue o enviar un pull request.
+
+---
+Hecho con ❤️ para facilitar la búsqueda de prospectos.
